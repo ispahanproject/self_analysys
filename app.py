@@ -11,38 +11,58 @@ import json
 pio.templates.default = "plotly_dark"
 st.set_page_config(page_title="Pilot AI Log", page_icon="✈️", layout="wide")
 
-# Gemini API設定
-try:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash')
-except Exception:
-    st.error("APIキーが設定されていません。Secretsに GEMINI_API_KEY を追加してください。")
+# --- Gemini API設定 (エラーハンドリング強化版) ---
+model = None  # 初期化しておく
+api_error_message = ""
 
-# コンピテンシー定義 (AIへの指示用)
+try:
+    # Secretsからキーを取得できるかチェック
+    if "GEMINI_API_KEY" in st.secrets:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    else:
+        api_error_message = "Secretsに 'GEMINI_API_KEY' が見つかりません。"
+except Exception as e:
+    api_error_message = f"API設定中にエラーが発生しました: {e}"
+
+# コンピテンシー定義
 COMPETENCIES = ["FA", "FM", "AP", "SA", "DM", "WM", "TB", "CO", "KK", "AA"]
 PHASES = ["Pre-flight", "Taxi", "Takeoff", "Climb", "Cruise", "Descent", "Approach", "Landing", "Parking", "Debriefing"]
 
+st.title("👨‍✈️ AI Pilot Performance Tracker")
+
+# APIエラーがある場合は画面上部に警告を出す
+if api_error_message:
+    st.error(f"⚠️ {api_error_message}")
+    st.warning("Streamlit Cloudの 'Manage app' > 'Settings' > 'Secrets' を確認してください。")
+
 # --- Google Sheets 接続 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4], ttl=5) # 列数を増やしてAIコメントも保存可能に
+# シート読み込み（列不足エラー回避のためtryで囲む）
+try:
+    df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4], ttl=5)
+except Exception:
+    # 5列目(AI_Feedback)がない場合のフォールバック
+    try:
+        df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3], ttl=5)
+    except:
+        df = pd.DataFrame()
 
 # データ初期化
 if df.empty:
     df = pd.DataFrame(columns=["Date", "Phase", "Memo", "Tags", "AI_Feedback"])
 else:
-    # 既存データにAI_Feedback列がない場合の対応
     if "AI_Feedback" not in df.columns:
         df["AI_Feedback"] = ""
-    df["Date"] = df["Date"].astype(str)
-    df["Tags"] = df["Tags"].astype(str)
-    df["AI_Feedback"] = df["AI_Feedback"].astype(str)
-
-st.title("👨‍✈️ AI Pilot Performance Tracker")
+    # 型変換
+    for col in ["Date", "Phase", "Memo", "Tags", "AI_Feedback"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
 
 # --- サイドバー: AI解析付き入力フォーム ---
 st.sidebar.header("📝 New Entry with AI")
 
-# セッション状態の管理（AIの結果をフォームに反映させるため）
+# セッション状態の管理
 if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
 if 'form_tags' not in st.session_state: st.session_state.form_tags = []
 if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
@@ -52,9 +72,11 @@ input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: �
 
 # 2. AI解析ボタン
 if st.sidebar.button("✨ Analyze with AI", type="primary"):
-    if input_memo:
+    # ここで model があるかチェックする（クラッシュ防止）
+    if model is None:
+        st.sidebar.error("AIモデルが起動していません。Secretsの設定を確認してください。")
+    elif input_memo:
         with st.sidebar.status("Co-pilot is analyzing..."):
-            # プロンプト作成
             prompt = f"""
             あなたはベテランパイロットのインストラクターです。
             以下のフライトメモを分析し、JSON形式で出力してください。
@@ -73,15 +95,13 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
             
             try:
                 response = model.generate_content(prompt)
-                # JSON部分を抽出（ ```json ... ``` を除去）
                 text = response.text.replace("```json", "").replace("```", "").strip()
                 result = json.loads(text)
                 
-                # 結果をセッションに保存
                 st.session_state.form_phase = result.get("phase", "Pre-flight")
                 st.session_state.form_tags = result.get("tags", [])
                 st.session_state.form_feedback = result.get("feedback", "")
-                st.rerun() # 画面更新してフォームに反映
+                st.rerun()
                 
             except Exception as e:
                 st.sidebar.error(f"Analysis Failed: {e}")
@@ -92,8 +112,12 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
 with st.sidebar.form("save_form"):
     date = st.date_input("Date", datetime.now())
     
-    # AIが提案した値がデフォルトに入る
-    phase = st.selectbox("Phase", PHASES, index=PHASES.index(st.session_state.form_phase) if st.session_state.form_phase in PHASES else 0)
+    # AI提案値の反映
+    current_phase_idx = 0
+    if st.session_state.form_phase in PHASES:
+        current_phase_idx = PHASES.index(st.session_state.form_phase)
+        
+    phase = st.selectbox("Phase", PHASES, index=current_phase_idx)
     tags = st.multiselect("Performance Indicators", COMPETENCIES, default=st.session_state.form_tags)
     feedback = st.text_area("AI / Instructor Comment", value=st.session_state.form_feedback, height=80)
     
@@ -110,7 +134,6 @@ with st.sidebar.form("save_form"):
         updated_df = pd.concat([df, new_row], ignore_index=True)
         conn.update(worksheet="Sheet1", data=updated_df)
         st.success("Log Saved!")
-        # フォームリセット
         st.session_state.form_phase = "Pre-flight"
         st.session_state.form_tags = []
         st.session_state.form_feedback = ""
@@ -121,7 +144,6 @@ tab1, tab2 = st.tabs(["📊 Analytics", "🗂 Logbook"])
 
 with tab1:
     if not df.empty:
-        # タグ集計
         all_tags = []
         for t_str in df["Tags"]:
             if t_str != "nan" and t_str:
@@ -130,7 +152,6 @@ with tab1:
         if all_tags:
             tag_counts = pd.Series(all_tags).value_counts()
             
-            # レーダーチャート
             fig = go.Figure()
             fig.add_trace(go.Scatterpolar(
                 r=[tag_counts.get(c, 0) for c in COMPETENCIES],
@@ -145,12 +166,14 @@ with tab1:
             st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    # 検索機能
     search = st.text_input("🔍 Search Logs", "")
     target_df = df[df["Memo"].str.contains(search, case=False, na=False)] if search else df
     
-    # カード形式で表示
     for index, row in target_df.sort_values(by="Date", ascending=False).iterrows():
+        fb_text = row.get('AI_Feedback', '')
+        if fb_text == 'nan': fb_text = ''
+        
         with st.expander(f"{row['Date']} - {row['Phase']} ({row['Tags']})"):
             st.markdown(f"**Memo:**\n{row['Memo']}")
-            st.info(f"**🤖 AI Feedback:**\n{row['AI_Feedback']}")
+            if fb_text:
+                st.info(f"**🤖 AI Feedback:**\n{fb_text}")
