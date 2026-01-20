@@ -51,7 +51,8 @@ else:
 
 # --- 関数 ---
 def reset_entry():
-    st.session_state.messages = [{"role": "assistant", "content": "SYSTEM READY. フライトの振り返りを開始します。"}]
+    # ★ここも先輩口調に変更
+    st.session_state.messages = [{"role": "assistant", "content": "お疲れ様！今日のフライトはどうだった？何でも話してね。"}]
     st.session_state.form_phase = "Pre-flight"
     st.session_state.form_tags = []
     st.session_state.form_airport = ""
@@ -98,7 +99,8 @@ with col_chat:
     
     with chat_container:
         for msg in st.session_state.messages:
-            avatar = "👨‍✈️" if msg["role"] == "user" else "🤖"
+            # アイコンを女性教官に変更
+            avatar = "👨‍✈️" if msg["role"] == "user" else "👩‍✈️"
             with st.chat_message(msg["role"], avatar=avatar):
                 st.markdown(msg["content"])
 
@@ -113,16 +115,23 @@ with col_chat:
 
         if api_key:
             with chat_container:
-                with st.chat_message("assistant", avatar="🤖"):
+                with st.chat_message("assistant", avatar="👩‍✈️"):
                     placeholder = st.empty()
-                    placeholder.markdown("`PROCESSING...`")
+                    placeholder.markdown("`THINKING...`")
                     
                     current_memo = st.session_state.form_memo
                     
-                    # --- ★ここが修正ポイント: 雑談除外の指示を追加 ---
+                    # --- ★ここがキャラ変ポイント ---
                     system_prompt = f"""
-                    あなたはベテランパイロット教官です。
-                    ユーザーの発言に対して、まずは日本語で会話（質問、共感、アドバイス）を行ってください。
+                    あなたはユーザーにとっての「頼れる女性の先輩パイロット」です。
+                    ユーザーの発言に対して、まずは日本語で会話を行ってください。
+
+                    【口調の指定】
+                    - 親しみやすく、包容力のある先輩口調で話すこと。
+                    - 例：「〜だね」「〜かな？」「大変だったね」「次はこうしてみよう！」
+                    - 決して堅苦しい敬語（〜ですね、〜しました）は使わないこと。
+                    - ユーザーを励まし、気付きを与えるようなアドバイスを行うこと。
+
                     その後に、区切り文字を入れてJSONデータを出力してください。
 
                     [現在のメモ状況]
@@ -132,14 +141,11 @@ with col_chat:
                     {prompt}
 
                     【出力ルール】
-                    1. **会話パート:** ユーザーが雑談（食事の話など）をした場合は、それに付き合って気さくに返答すること。
-                    2. **JSONデータパート:** こちらは「公的なログブック」として扱うこと。
-                       - `memo_summary` には、運航、安全、操作、機体、気象、クルーリソースに関連する**「航空業務上の事実」のみ**を記録せよ。
-                       - **雑談、食事、私的な感情、業務に関係のない愚痴は、JSONからは完全に除外・削除せよ。**
+                    1. **会話パート:** 雑談には気さくに付き合うこと（食事の話など）。
+                    2. **JSONデータパート:** ここは公的なログなので、**「航空業務上の事実」のみ**をクールに記録すること。雑談は一切含めない。
 
                     【出力フォーマット】
-                    (Part 1: 会話)
-                    教官としての返答
+                    (Part 1: 先輩としての会話)
                     
                     ||JSON_START||
                     
