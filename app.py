@@ -4,162 +4,153 @@ import plotly.graph_objects as go
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 import plotly.io as pio
+import google.generativeai as genai
+import json
 
-# ダークモードグラフ設定
+# --- 初期設定 ---
 pio.templates.default = "plotly_dark"
+st.set_page_config(page_title="Pilot AI Log", page_icon="✈️", layout="wide")
 
-# --- 設定: キーワード定義 ---
+# Gemini API設定
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    model = genai.GenerativeModel('gemini-1.5-flash')
+except Exception:
+    st.error("APIキーが設定されていません。Secretsに GEMINI_API_KEY を追加してください。")
 
-# 1. コンピテンシー (タグ) 判定用辞書
-TAG_KEYWORDS = {
-    "FA": ["Auto", "Automation", "FMS", "MCP", "AFDS", "Mode", "VNAV", "LNAV", "LOC", "APP"],
-    "FM": ["Manual", "Hand", "Control", "Stick", "Rudder", "Brake", "Thrust", "Disconnect", "Raw", "Visual", "操作", "ハンド", "マニュアル", "舵", "足", "ブレーキ"],
-    "AP": ["Proc", "Checklist", "SOP", "Limit", "Config", "Flap", "Gear", "手順", "規定", "チェックリスト", "リミット"],
-    "SA": ["SA", "Monitor", "Weather", "WX", "Radar", "Cloud", "Wind", "Fog", "Ice", "Energy", "Speed", "Alt", "気象", "揺れ", "雲", "風", "視程", "モニター", "認識"],
-    "DM": ["Deci", "Option", "Risk", "Plan", "Divert", "Go-around", "GA", "判断", "決断", "選択", "案", "リスク", "変更"],
-    "WM": ["Time", "Task", "Rush", "Delay", "Busy", "Load", "時間", "タスク", "忙", "遅れ", "焦り"],
-    "TB": ["Team", "CA", "CP", "Copilot", "Captain", "Leader", "Member", "Atmosphere", "チーム", "機長", "副操縦士", "客室", "雰囲気", "連携"],
-    "CO": ["Comm", "Talk", "Listen", "ATC", "Call", "Briefing", "Radio", "PA", "Assert", "話", "聞", "交信", "ブリーフィング", "連絡", "伝"],
-    "KK": ["Know", "System", "Reg", "Law", "Terrain", "Route", "知識", "システム", "法", "地形", "空港", "特性"],
-    "AA": ["Attitude", "Safe", "Customer", "Comfort", "Rule", "Comp", "態度", "安全", "顧客", "快適", "遵", "丁寧"]
-}
-
-# 2. フライトフェーズ判定用辞書 (★今回追加)
-PHASE_KEYWORDS = {
-    "Pre-flight": ["Pre-flight", "Briefing", "Show up", "ブリーフィング", "準備", "天気確認", "整備", "シップ", "外部点検"],
-    "Taxi": ["Taxi", "Ground", "Ramp", "Gate", "タキシング", "地上", "滑走路", "R/W", "ブロックアウト"],
-    "Takeoff": ["Takeoff", "T/O", "Departure", "V1", "VR", "Rotate", "離陸", "滑走", "上がり"],
-    "Climb": ["Climb", "FL", "Level off", "上昇", "レベルオフ", "SID"],
-    "Cruise": ["Cruise", "Level", "Turbulence", "巡航", "揺れ", "ステップ", "気流"],
-    "Descent": ["Descent", "Descend", "TOD", "STAR", "Arrival", "降下", "アライバル"],
-    "Approach": ["Approach", "App", "ILS", "LOC", "G/S", "Vector", "Go-around", "GA", "進入", "アプローチ", "会合"],
-    "Landing": ["Landing", "Land", "Touchdown", "Flare", "Rollout", "着陸", "接地", "フレア", "リバース", "クロスウィンド"],
-    "Parking": ["Parking", "Spot", "Shutdown", "Engine off", "Block in", "スポット", "エンジンカット", "ブロックイン"],
-    "Debriefing": ["Debriefing", "Review", "デブリーフィング", "振り返り", "解散"]
-}
-PHASE_LIST = list(PHASE_KEYWORDS.keys())
-
-st.set_page_config(page_title="Pilot Log", page_icon="✈️", layout="wide")
-st.title("👨‍✈️ Pilot Performance Tracker")
+# コンピテンシー定義 (AIへの指示用)
+COMPETENCIES = ["FA", "FM", "AP", "SA", "DM", "WM", "TB", "CO", "KK", "AA"]
+PHASES = ["Pre-flight", "Taxi", "Takeoff", "Climb", "Cruise", "Descent", "Approach", "Landing", "Parking", "Debriefing"]
 
 # --- Google Sheets 接続 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
+df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4], ttl=5) # 列数を増やしてAIコメントも保存可能に
 
-# データの読み込み
-df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3], ttl=5)
+# データ初期化
 if df.empty:
-    df = pd.DataFrame(columns=["Date", "Phase", "Memo", "Tags"])
+    df = pd.DataFrame(columns=["Date", "Phase", "Memo", "Tags", "AI_Feedback"])
 else:
+    # 既存データにAI_Feedback列がない場合の対応
+    if "AI_Feedback" not in df.columns:
+        df["AI_Feedback"] = ""
     df["Date"] = df["Date"].astype(str)
     df["Tags"] = df["Tags"].astype(str)
+    df["AI_Feedback"] = df["AI_Feedback"].astype(str)
 
-# --- 入力エリア ---
-st.sidebar.header("📝 New Entry")
+st.title("👨‍✈️ AI Pilot Performance Tracker")
 
-# 1. メモ入力 (ここに入力された内容を見て、下のPhaseとTagsを書き換えます)
-memo = st.sidebar.text_area("Flight Memo", height=150, placeholder="例: 強い横風着陸でマニュアル操作を行った。")
+# --- サイドバー: AI解析付き入力フォーム ---
+st.sidebar.header("📝 New Entry with AI")
 
-# --- 自動判別ロジック ---
+# セッション状態の管理（AIの結果をフォームに反映させるため）
+if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
+if 'form_tags' not in st.session_state: st.session_state.form_tags = []
+if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
 
-# A. Phaseの自動判別
-default_phase_index = 0 # デフォルトはPre-flight
-if memo:
-    # 辞書を上から順番にチェックして、最初にヒットしたフェーズを採用
-    for i, (p_name, keywords) in enumerate(PHASE_KEYWORDS.items()):
-        if any(k.lower() in memo.lower() for k in keywords):
-            default_phase_index = i
-            break
+# 1. メモ入力
+input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: クロスウィンド着陸。接地寸前に風下ラダーを入れたらスムーズだった。")
 
-# B. Tagsの自動判別
-auto_tags = []
-if memo:
-    for tag, keywords in TAG_KEYWORDS.items():
-        if any(k.lower() in memo.lower() for k in keywords):
-            auto_tags.append(tag)
-auto_tags = list(set(auto_tags))
+# 2. AI解析ボタン
+if st.sidebar.button("✨ Analyze with AI", type="primary"):
+    if input_memo:
+        with st.sidebar.status("Co-pilot is analyzing..."):
+            # プロンプト作成
+            prompt = f"""
+            あなたはベテランパイロットのインストラクターです。
+            以下のフライトメモを分析し、JSON形式で出力してください。
+            
+            [メモ]
+            {input_memo}
+            
+            [出力要件]
+            1. "phase": メモの内容に最も合致するフライトフェーズ ({', '.join(PHASES)}) から1つ選ぶ。
+            2. "tags": 関連するコンピテンシー ({', '.join(COMPETENCIES)}) をリストで選ぶ (最大3つ)。
+            3. "feedback": インストラクターとしての短いフィードバック(1文)。
+            
+            出力はJSONのみ。
+            Example: {{"phase": "Landing", "tags": ["FM", "SA"], "feedback": "適切な修正操作です。"}}
+            """
+            
+            try:
+                response = model.generate_content(prompt)
+                # JSON部分を抽出（ ```json ... ``` を除去）
+                text = response.text.replace("```json", "").replace("```", "").strip()
+                result = json.loads(text)
+                
+                # 結果をセッションに保存
+                st.session_state.form_phase = result.get("phase", "Pre-flight")
+                st.session_state.form_tags = result.get("tags", [])
+                st.session_state.form_feedback = result.get("feedback", "")
+                st.rerun() # 画面更新してフォームに反映
+                
+            except Exception as e:
+                st.sidebar.error(f"Analysis Failed: {e}")
+    else:
+        st.sidebar.warning("メモを入力してください")
 
-# --- 入力フォーム表示 ---
-
-date = st.sidebar.date_input("Date", datetime.now())
-
-# Phase選択肢 (index引数を使って、自動判別した位置を初期選択にする)
-phase = st.sidebar.selectbox("Phase", PHASE_LIST, index=default_phase_index)
-
-# Tags選択肢 (default引数を使って、自動判別したタグを初期選択にする)
-selected_tags = st.sidebar.multiselect(
-    "Performance Indicators", 
-    options=list(TAG_KEYWORDS.keys()),
-    default=auto_tags
-)
-
-# 保存ボタン
-if st.sidebar.button("Save Entry", type="primary"):
-    new_row = pd.DataFrame([{
-        "Date": str(date),
-        "Phase": phase,
-        "Memo": memo,
-        "Tags": ", ".join(selected_tags)
-    }])
-    updated_df = pd.concat([df, new_row], ignore_index=True)
-    conn.update(worksheet="Sheet1", data=updated_df)
-    st.sidebar.success("Saved!")
-    st.rerun()
+# 3. 確認・修正・保存フォーム
+with st.sidebar.form("save_form"):
+    date = st.date_input("Date", datetime.now())
+    
+    # AIが提案した値がデフォルトに入る
+    phase = st.selectbox("Phase", PHASES, index=PHASES.index(st.session_state.form_phase) if st.session_state.form_phase in PHASES else 0)
+    tags = st.multiselect("Performance Indicators", COMPETENCIES, default=st.session_state.form_tags)
+    feedback = st.text_area("AI / Instructor Comment", value=st.session_state.form_feedback, height=80)
+    
+    submitted = st.form_submit_button("Save to Logbook")
+    
+    if submitted:
+        new_row = pd.DataFrame([{
+            "Date": str(date),
+            "Phase": phase,
+            "Memo": input_memo,
+            "Tags": ", ".join(tags),
+            "AI_Feedback": feedback
+        }])
+        updated_df = pd.concat([df, new_row], ignore_index=True)
+        conn.update(worksheet="Sheet1", data=updated_df)
+        st.success("Log Saved!")
+        # フォームリセット
+        st.session_state.form_phase = "Pre-flight"
+        st.session_state.form_tags = []
+        st.session_state.form_feedback = ""
+        st.rerun()
 
 # --- ダッシュボード表示 ---
 tab1, tab2 = st.tabs(["📊 Analytics", "🗂 Logbook"])
 
 with tab1:
     if not df.empty:
-        all_tags_list = []
-        for tags_str in df["Tags"]:
-            if tags_str and tags_str != "nan":
-                all_tags_list.extend([t.strip() for t in tags_str.split(",")])
+        # タグ集計
+        all_tags = []
+        for t_str in df["Tags"]:
+            if t_str != "nan" and t_str:
+                all_tags.extend([t.strip() for t in t_str.split(",")])
         
-        if all_tags_list:
-            tag_counts = pd.Series(all_tags_list).value_counts()
+        if all_tags:
+            tag_counts = pd.Series(all_tags).value_counts()
             
             # レーダーチャート
-            categories = list(TAG_KEYWORDS.keys())
-            values = [tag_counts.get(cat, 0) for cat in categories]
-            
             fig = go.Figure()
             fig.add_trace(go.Scatterpolar(
-                r=values,
-                theta=categories,
+                r=[tag_counts.get(c, 0) for c in COMPETENCIES],
+                theta=COMPETENCIES,
                 fill='toself',
-                name='Performance',
-                line_color='#00CC96'
+                name='My Stats'
             ))
             fig.update_layout(
-                polar=dict(
-                    radialaxis=dict(visible=True, showticklabels=False),
-                    bgcolor='rgba(0,0,0,0)'
-                ),
-                margin=dict(l=40, r=40, t=40, b=40),
-                paper_bgcolor='rgba(0,0,0,0)',
-                font_color="white"
+                polar=dict(radialaxis=dict(visible=True)),
+                margin=dict(t=20, b=20, l=40, r=40)
             )
             st.plotly_chart(fig, use_container_width=True)
-            
-            # インサイト
-            st.markdown("### 💡 Latest Insights")
-            col1, col2 = st.columns(2)
-            with col1:
-                top_tag = tag_counts.idxmax()
-                st.metric("Most Frequent", f"{top_tag} ({tag_counts.max()})")
-            with col2:
-                recent_phase = df.iloc[-1]["Phase"]
-                st.metric("Last Phase", recent_phase)
 
 with tab2:
+    # 検索機能
     search = st.text_input("🔍 Search Logs", "")
-    if search:
-        display_df = df[df["Memo"].str.contains(search, case=False, na=False)]
-    else:
-        display_df = df
-        
-    st.dataframe(
-        display_df.sort_values(by="Date", ascending=False), 
-        use_container_width=True,
-        hide_index=True
-    )
+    target_df = df[df["Memo"].str.contains(search, case=False, na=False)] if search else df
+    
+    # カード形式で表示
+    for index, row in target_df.sort_values(by="Date", ascending=False).iterrows():
+        with st.expander(f"{row['Date']} - {row['Phase']} ({row['Tags']})"):
+            st.markdown(f"**Memo:**\n{row['Memo']}")
+            st.info(f"**🤖 AI Feedback:**\n{row['AI_Feedback']}")
