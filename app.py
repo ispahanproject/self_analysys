@@ -11,19 +11,17 @@ import json
 pio.templates.default = "plotly_dark"
 st.set_page_config(page_title="Pilot AI Log", page_icon="✈️", layout="wide")
 
-# --- Gemini API設定 (安定版 gemini-pro を使用) ---
+# --- Gemini API設定 ---
 model = None
-api_error_message = ""
-
 try:
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # エラー回避のため、あえて古いライブラリでも動く 'gemini-pro' を使用します
-        model = genai.GenerativeModel('gemini-pro')
+        # 最新ライブラリではこれが標準です
+        model = genai.GenerativeModel('gemini-1.5-flash')
     else:
-        api_error_message = "Secretsに 'GEMINI_API_KEY' が見つかりません。"
+        st.error("Secretsに 'GEMINI_API_KEY' がありません。")
 except Exception as e:
-    api_error_message = f"API設定中にエラーが発生しました: {e}"
+    st.error(f"API Error: {e}")
 
 # コンピテンシー定義
 COMPETENCIES = ["FA", "FM", "AP", "SA", "DM", "WM", "TB", "CO", "KK", "AA"]
@@ -31,150 +29,64 @@ PHASES = ["Pre-flight", "Taxi", "Takeoff", "Climb", "Cruise", "Descent", "Approa
 
 st.title("👨‍✈️ AI Pilot Performance Tracker")
 
-# APIエラー警告
-if api_error_message:
-    st.error(f"⚠️ {api_error_message}")
-    st.warning("Secretsの設定を確認してください。")
-
 # --- Google Sheets 接続 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 try:
     df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4], ttl=5)
-except Exception:
+except:
     try:
         df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3], ttl=5)
     except:
         df = pd.DataFrame()
 
-# データ初期化
 if df.empty:
     df = pd.DataFrame(columns=["Date", "Phase", "Memo", "Tags", "AI_Feedback"])
 else:
-    if "AI_Feedback" not in df.columns:
-        df["AI_Feedback"] = ""
-    for col in ["Date", "Phase", "Memo", "Tags", "AI_Feedback"]:
-        if col in df.columns:
-            df[col] = df[col].astype(str)
+    if "AI_Feedback" not in df.columns: df["AI_Feedback"] = ""
+    for col in df.columns: df[col] = df[col].astype(str)
 
-# --- サイドバー: AI解析付き入力フォーム ---
+# --- 入力フォーム ---
 st.sidebar.header("📝 New Entry with AI")
 
 if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
 if 'form_tags' not in st.session_state: st.session_state.form_tags = []
 if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
 
-# 1. メモ入力
-input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: クロスウィンド着陸。接地寸前に風下ラダーを入れたらスムーズだった。")
+input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="メモを入力...")
 
-# 2. AI解析ボタン
 if st.sidebar.button("✨ Analyze with AI", type="primary"):
-    if model is None:
-        st.sidebar.error("AIモデルが起動していません。Secretsの設定を確認してください。")
-    elif input_memo:
+    if model and input_memo:
         with st.sidebar.status("Co-pilot is analyzing..."):
             prompt = f"""
-            あなたはベテランパイロットのインストラクターです。
-            以下のフライトメモを分析し、JSON形式で出力してください。
-            
-            [メモ]
-            {input_memo}
-            
-            [出力要件]
-            1. "phase": メモの内容に最も合致するフライトフェーズ ({', '.join(PHASES)}) から1つ選ぶ。
-            2. "tags": 関連するコンピテンシー ({', '.join(COMPETENCIES)}) をリストで選ぶ (最大3つ)。
-            3. "feedback": インストラクターとしての短いフィードバック(1文)。
-            
-            出力はJSONのみ。
-            Example: {{"phase": "Landing", "tags": ["FM", "SA"], "feedback": "適切な修正操作です。"}}
+            以下を分析しJSONで出力せよ:
+            メモ: {input_memo}
+            1. "phase": {PHASES} から1つ
+            2. "tags": {COMPETENCIES} から最大3つ
+            3. "feedback": 日本語で1文のフィードバック
+            Example: {{"phase": "Landing", "tags": ["FM"], "feedback": "コメント"}}
             """
-            
             try:
                 response = model.generate_content(prompt)
-                # JSONクリーニング処理
-                text = response.text
-                if "```json" in text:
-                    text = text.split("```json")[1].split("```")[0]
-                elif "```" in text:
-                    text = text.split("```")[0]
-                text = text.strip()
-                
+                text = response.text.replace("```json", "").replace("```", "").strip()
                 result = json.loads(text)
-                
                 st.session_state.form_phase = result.get("phase", "Pre-flight")
                 st.session_state.form_tags = result.get("tags", [])
                 st.session_state.form_feedback = result.get("feedback", "")
                 st.rerun()
-                
             except Exception as e:
-                st.sidebar.error(f"Analysis Failed: {e}")
-    else:
-        st.sidebar.warning("メモを入力してください")
+                st.sidebar.error(f"Error: {e}")
 
-# 3. 確認・修正・保存フォーム
-with st.sidebar.form("save_form"):
+with st.sidebar.form("save"):
     date = st.date_input("Date", datetime.now())
+    idx = PHASES.index(st.session_state.form_phase) if st.session_state.form_phase in PHASES else 0
+    phase = st.selectbox("Phase", PHASES, index=idx)
+    tags = st.multiselect("Tags", COMPETENCIES, default=st.session_state.form_tags)
+    fb = st.text_area("Feedback", value=st.session_state.form_feedback)
     
-    current_phase_idx = 0
-    if st.session_state.form_phase in PHASES:
-        current_phase_idx = PHASES.index(st.session_state.form_phase)
-        
-    phase = st.selectbox("Phase", PHASES, index=current_phase_idx)
-    tags = st.multiselect("Performance Indicators", COMPETENCIES, default=st.session_state.form_tags)
-    feedback = st.text_area("AI / Instructor Comment", value=st.session_state.form_feedback, height=80)
-    
-    submitted = st.form_submit_button("Save to Logbook")
-    
-    if submitted:
-        new_row = pd.DataFrame([{
-            "Date": str(date),
-            "Phase": phase,
-            "Memo": input_memo,
-            "Tags": ", ".join(tags),
-            "AI_Feedback": feedback
-        }])
-        updated_df = pd.concat([df, new_row], ignore_index=True)
-        conn.update(worksheet="Sheet1", data=updated_df)
-        st.success("Log Saved!")
-        st.session_state.form_phase = "Pre-flight"
-        st.session_state.form_tags = []
-        st.session_state.form_feedback = ""
-        st.rerun()
+    if st.form_submit_button("Save"):
+        new_row = pd.DataFrame([{"Date": str(date), "Phase": phase, "Memo": input_memo, "Tags": ", ".join(tags), "AI_Feedback": fb}])
+        conn.update(worksheet="Sheet1", data=pd.concat([df, new_row], ignore_index=True))
+        st.success("Saved!")
 
-# --- ダッシュボード表示 ---
-tab1, tab2 = st.tabs(["📊 Analytics", "🗂 Logbook"])
-
-with tab1:
-    if not df.empty:
-        all_tags = []
-        for t_str in df["Tags"]:
-            if t_str != "nan" and t_str:
-                all_tags.extend([t.strip() for t in t_str.split(",")])
-        
-        if all_tags:
-            tag_counts = pd.Series(all_tags).value_counts()
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatterpolar(
-                r=[tag_counts.get(c, 0) for c in COMPETENCIES],
-                theta=COMPETENCIES,
-                fill='toself',
-                name='My Stats'
-            ))
-            fig.update_layout(
-                polar=dict(radialaxis=dict(visible=True)),
-                margin=dict(t=20, b=20, l=40, r=40)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-with tab2:
-    search = st.text_input("🔍 Search Logs", "")
-    target_df = df[df["Memo"].str.contains(search, case=False, na=False)] if search else df
-    
-    for index, row in target_df.sort_values(by="Date", ascending=False).iterrows():
-        fb_text = row.get('AI_Feedback', '')
-        if fb_text == 'nan': fb_text = ''
-        
-        with st.expander(f"{row['Date']} - {row['Phase']} ({row['Tags']})"):
-            st.markdown(f"**Memo:**\n{row['Memo']}")
-            if fb_text:
-                st.info(f"**🤖 AI Feedback:**\n{fb_text}")
+# --- ログ表示 ---
+st.dataframe(df.sort_values("Date", ascending=False), use_container_width=True)
