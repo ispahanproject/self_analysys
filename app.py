@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import json
 import requests
 import time
+import re  # 正規表現モジュールを追加
 
 # --- ページ設定 ---
 st.set_page_config(page_title="J.A.R.V.I.S. Flight Log", page_icon="🤖", layout="wide")
@@ -216,11 +217,13 @@ with col_chat:
                     【ルール】
                     - 雑談（食事、感情）はデータログ(JSON)には含めないこと。
                     - `memo_summary` は事実のみの箇条書き。
+                    - JSONは必ず含めること。
 
                     【Format】
                     (Conversation)
-                    ||JSON_START||
-                    (JSON Data)
+                    ...
+                    (JSON Data Block)
+                    ```json
                     {{
                         "phase": "{PHASES} から1つ",
                         "tags": {COMPETENCIES} (List),
@@ -228,6 +231,7 @@ with col_chat:
                         "feedback": "Comment (1 sentence)",
                         "memo_summary": "Facts only bullet points"
                     }}
+                    ```
                     """
                     
                     # 安定版モデル
@@ -250,40 +254,59 @@ with col_chat:
                             time.sleep(1)
                             continue
                     
-                    # 結果処理（エラー詳細を表示するように変更）
+                    # 結果処理
                     try:
                         if response.status_code == 200:
                             result_json = response.json()
-                            raw = result_json['candidates'][0]['content']['parts'][0]['text']
+                            raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
                             
-                            chat_res = raw
+                            chat_res = raw_text # デフォルトは全文表示
                             
-                            if "||JSON_START||" in raw:
-                                parts = raw.split("||JSON_START||")
-                                chat_res = parts[0].strip()
-                                json_part = parts[1].strip().replace("```json","").replace("```","")
+                            # --- ★強化されたデータ抽出ロジック (Regex) ---
+                            # JSONブロック( ```json ... ``` ) または {...} を無理やり探す
+                            extracted_json = None
+                            
+                            # パターン1: マークダウンのコードブロックを探す
+                            json_match = re.search(r'```json\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
+                            if not json_match:
+                                # パターン2: コードブロックはないが、{...} がある場合を探す
+                                json_match = re.search(r'(\{.*\})', raw_text, re.DOTALL)
                                 
+                            if json_match:
+                                json_str = json_match.group(1)
                                 try:
-                                    d = json.loads(json_part)
-                                    st.session_state.form_phase = d.get("phase", st.session_state.form_phase)
-                                    new_tags = d.get("tags", [])
-                                    if not isinstance(new_tags, list): new_tags = []
-                                    st.session_state.form_tags = new_tags
-                                    st.session_state.form_airport = d.get("airport", st.session_state.form_airport)
-                                    if d.get("feedback"): st.session_state.form_feedback = d.get("feedback")
-                                    if d.get("memo_summary"): st.session_state.form_memo = d.get("memo_summary")
+                                    d = json.loads(json_str)
+                                    extracted_json = d
+                                    # 会話部分はJSONを除いた部分にする
+                                    chat_res = raw_text.replace(json_match.group(0), "").strip()
+                                    # 余計な ``` が残っていたら消す
+                                    chat_res = chat_res.replace("```", "").strip()
                                 except:
-                                    pass # JSON解析失敗時は会話のみ表示
+                                    pass # JSON解析失敗
+                            
+                            # データ反映
+                            if extracted_json:
+                                st.session_state.form_phase = extracted_json.get("phase", st.session_state.form_phase)
+                                new_tags = extracted_json.get("tags", [])
+                                if not isinstance(new_tags, list): new_tags = []
+                                st.session_state.form_tags = new_tags
+                                st.session_state.form_airport = extracted_json.get("airport", st.session_state.form_airport)
+                                if extracted_json.get("feedback"): st.session_state.form_feedback = extracted_json.get("feedback")
+                                if extracted_json.get("memo_summary"): st.session_state.form_memo = extracted_json.get("memo_summary")
                             
                             placeholder.markdown(chat_res)
                             st.session_state.messages.append({"role": "assistant", "content": chat_res})
+                            
+                            # デバッグ用（もし反映されない場合、ここを確認）
+                            with st.expander("DEBUG: AI RAW OUTPUT"):
+                                st.code(raw_text)
+                            
                             st.rerun()
+
                         else:
-                            # HTTPエラーステータスを表示
                             placeholder.error(f"SYSTEM FAILURE: HTTP {response.status_code} - {response.text}")
                             
                     except Exception as e:
-                         # 例外内容を詳細に表示
                          placeholder.error(f"CONNECTION LOST. DETAILS: {e}")
 
 # --- Data Panel ---
