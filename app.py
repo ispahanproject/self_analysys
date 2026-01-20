@@ -33,7 +33,7 @@ else:
     if "AI_Feedback" not in df.columns: df["AI_Feedback"] = ""
     for col in df.columns: df[col] = df[col].astype(str)
 
-# --- サイドバー: AI解析付き入力フォーム ---
+# --- サイドバー ---
 st.sidebar.header("📝 New Entry with AI")
 
 if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
@@ -43,7 +43,7 @@ if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
 input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: クロスウィンド着陸。接地寸前に風下ラダーを入れたらスムーズだった。")
 
 if st.sidebar.button("✨ Analyze with AI", type="primary"):
-    # 【最重要修正】APIキーのゴミ取り（引用符や改行を強制削除）
+    # APIキーのクリーニング
     raw_key = st.secrets.get("GEMINI_API_KEY", "")
     api_key = str(raw_key).replace('"', '').replace("'", "").strip()
     
@@ -66,11 +66,12 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
             Example: {{"phase": "Landing", "tags": ["FM", "SA"], "feedback": "適切な修正操作です。"}}
             """
             
-            # APIリクエスト設定 (URLパラメータではなくヘッダーを使用)
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+            # 【変更点】モデルを標準の 'gemini-pro' に変更
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+            
             headers = {
                 'Content-Type': 'application/json',
-                'x-goog-api-key': api_key  # ここでクリーンなキーを渡す
+                'x-goog-api-key': api_key
             }
             data = {
                 "contents": [{"parts": [{"text": prompt_text}]}]
@@ -81,16 +82,20 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
                 
                 if response.status_code == 200:
                     result_json = response.json()
-                    text = result_json['candidates'][0]['content']['parts'][0]['text']
-                    # JSONクリーニング
-                    text = text.replace("```json", "").replace("```", "").strip()
-                    result = json.loads(text)
-                    
-                    st.session_state.form_phase = result.get("phase", "Pre-flight")
-                    st.session_state.form_tags = result.get("tags", [])
-                    st.session_state.form_feedback = result.get("feedback", "")
-                    st.rerun()
+                    # 応答構造の安全な取り出し
+                    try:
+                        text = result_json['candidates'][0]['content']['parts'][0]['text']
+                        text = text.replace("```json", "").replace("```", "").strip()
+                        result = json.loads(text)
+                        
+                        st.session_state.form_phase = result.get("phase", "Pre-flight")
+                        st.session_state.form_tags = result.get("tags", [])
+                        st.session_state.form_feedback = result.get("feedback", "")
+                        st.rerun()
+                    except KeyError:
+                        st.sidebar.error("AIからの応答が空でした。別のメモで試してください。")
                 else:
+                    # エラー詳細を表示
                     st.sidebar.error(f"Error {response.status_code}: {response.text}")
                     
             except Exception as e:
