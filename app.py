@@ -231,7 +231,7 @@ with col_chat:
                     """
                     
                     # 安定版モデル
-                    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+                    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-light:generateContent"
                     headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
                     data = {"contents": [{"parts": [{"text": system_prompt}]}]}
 
