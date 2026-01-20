@@ -36,11 +36,21 @@ else:
         if col not in df.columns: df[col] = ""
     for col in df.columns: df[col] = df[col].astype(str)
 
-# --- セッション状態 ---
-if "messages" not in st.session_state:
+# --- ★リセット用関数 (記憶をクリアして初期状態に戻す) ---
+def reset_entry():
     st.session_state.messages = [
-        {"role": "assistant", "content": "お疲れ様です、キャプテン。本日のフライトを振り返りましょう。気になった事象を少しずつ話してください。"}
+        {"role": "assistant", "content": "お疲れ様です、キャプテン。次のフライトについて話しましょう。"}
     ]
+    st.session_state.form_phase = "Pre-flight"
+    st.session_state.form_tags = []
+    st.session_state.form_airport = ""
+    st.session_state.form_memo = ""
+    st.session_state.form_feedback = ""
+
+# --- セッション状態初期化 ---
+if "messages" not in st.session_state:
+    # 初回起動時だけここを通る（以降はreset_entryで管理）
+    reset_entry()
 
 if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
 if 'form_tags' not in st.session_state: st.session_state.form_tags = []
@@ -55,10 +65,12 @@ col_chat, col_tools = st.columns([2, 1])
 # 左カラム: チャット
 # ==========================================
 with col_chat:
+    # 過去ログ表示
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
+    # 入力欄
     if prompt := st.chat_input("フライトの振り返りを入力..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -74,10 +86,9 @@ with col_chat:
                 message_placeholder = st.empty()
                 message_placeholder.markdown("Updating Log...")
 
-                # 現在のメモの内容を取得（これをAIに渡して維持させる）
                 current_memo_content = st.session_state.form_memo
 
-                # --- プロンプト修正部分（情報の統合ロジック） ---
+                # プロンプト（追記ロジック）
                 system_prompt = f"""
                 役割：あなたはベテランパイロット教官です。
                 ユーザーとの対話を通じて、フライトログの作成をサポートします。
@@ -103,17 +114,13 @@ with col_chat:
                 [Part 2: データ更新パート (JSON)]
                 以下の項目を含むJSONを出力。
                 
-                - phase: {PHASES} から最も適切なもの（会話が進んでフェーズが変わったら更新）
+                - phase: {PHASES} から最も適切なもの
                 - tags: {COMPETENCIES} から関連するものを**累積**して選択
                 - airport: 空港コード (IATA 3レター)
                 - feedback: 教官コメントの要約(1文)
                 - memo_summary: ★最重要★
                   「現在のメモ」の内容を保持しつつ、「新しい発言」から得られた事実を**追記・統合**した箇条書きテキスト。
                   過去の事実を勝手に消さないこと。時系列順に整理すること。
-                  (例: 
-                   - 出発前に整備遅れが発生
-                   - 離陸時、強い横風を確認
-                   - (今回追加) 着陸時、フレアが遅れた)
 
                 Markdown装飾なしの純粋なJSONとして出力してください。
                 """
@@ -135,7 +142,6 @@ with col_chat:
                             
                             try:
                                 extracted_data = json.loads(json_part)
-                                # 各項目を更新
                                 st.session_state.form_phase = extracted_data.get("phase", st.session_state.form_phase)
                                 st.session_state.form_tags = extracted_data.get("tags", st.session_state.form_tags)
                                 st.session_state.form_airport = extracted_data.get("airport", st.session_state.form_airport)
@@ -143,7 +149,6 @@ with col_chat:
                                 if extracted_data.get("feedback"):
                                     st.session_state.form_feedback = extracted_data.get("feedback")
                                 
-                                # ★重要：統合されたメモを反映
                                 if extracted_data.get("memo_summary"):
                                     st.session_state.form_memo = extracted_data.get("memo_summary")
 
@@ -162,12 +167,18 @@ with col_chat:
                     message_placeholder.error(f"通信エラー: {e}")
 
 # ==========================================
-# 右カラム: 保存フォーム
+# 右カラム: 保存フォーム & ツール
 # ==========================================
 with col_tools:
     st.header("📝 Log Entry")
-    st.caption("会話が進むと、ここに事実が追記されていきます")
     
+    # ★ここに手動リセットボタンを追加
+    if st.button("🔄 Start New Entry (Reset)", help="保存せずに会話と入力をリセットします"):
+        reset_entry()
+        st.rerun()
+        
+    st.markdown("---")
+
     with st.form("save_form"):
         date = st.date_input("Date", datetime.now())
         airport = st.text_input("Airport", value=st.session_state.form_airport)
@@ -178,11 +189,11 @@ with col_tools:
         
         tags = st.multiselect("Tags", COMPETENCIES, default=st.session_state.form_tags)
         
-        # メモ（AIが統合・追記した内容が入る）
         memo = st.text_area("Memo (Facts Only)", value=st.session_state.form_memo, height=200)
         
-        feedback = st.text_area("AI Feedback (Saved)", value=st.session_state.form_feedback, height=80)
+        feedback = st.text_area("AI Feedback", value=st.session_state.form_feedback, height=80)
         
+        # 保存ボタン
         if st.form_submit_button("💾 Save to Sheet", type="primary"):
             new_row = pd.DataFrame([{
                 "Date": str(date),
@@ -194,14 +205,17 @@ with col_tools:
             }])
             updated_df = pd.concat([df, new_row], ignore_index=True)
             conn.update(worksheet="Sheet1", data=updated_df)
+            
             st.success("Saved!")
-            st.session_state.form_memo = ""
-            st.session_state.form_feedback = ""
+            
+            # ★保存成功時に自動リセット
+            reset_entry()
             st.rerun()
 
     st.markdown("---")
     
-    tab_log, tab_stats = st.tabs(["🗂 Recent Logs", "📊 Stats"])
+    # ログ・分析タブ
+    tab_log, tab_stats = st.tabs(["🗂 Logs", "📊 Stats"])
     
     with tab_log:
         search = st.text_input("🔍 Search", "")
