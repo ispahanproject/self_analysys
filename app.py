@@ -11,16 +11,16 @@ import json
 pio.templates.default = "plotly_dark"
 st.set_page_config(page_title="Pilot AI Log", page_icon="✈️", layout="wide")
 
-# --- Gemini API設定 (エラーハンドリング強化版) ---
-model = None  # 初期化しておく
+# --- Gemini API設定 (gemini-1.5-flash対応版) ---
+model = None
 api_error_message = ""
 
 try:
     # Secretsからキーを取得できるかチェック
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # 15行目付近
-model = genai.GenerativeModel('gemini-1.5-flash')
+        # requirements.txt で google-generativeai>=0.7.0 を指定していれば flash が使えます
+        model = genai.GenerativeModel('gemini-1.5-flash')
     else:
         api_error_message = "Secretsに 'GEMINI_API_KEY' が見つかりません。"
 except Exception as e:
@@ -35,7 +35,7 @@ st.title("👨‍✈️ AI Pilot Performance Tracker")
 # APIエラーがある場合は画面上部に警告を出す
 if api_error_message:
     st.error(f"⚠️ {api_error_message}")
-    st.warning("Streamlit Cloudの 'Manage app' > 'Settings' > 'Secrets' を確認してください。")
+    st.warning("Streamlit Cloudの 'Manage app' > 'Settings' > 'Secrets' の記述場所を確認してください（一番上が推奨です）。")
 
 # --- Google Sheets 接続 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -73,7 +73,7 @@ input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: �
 
 # 2. AI解析ボタン
 if st.sidebar.button("✨ Analyze with AI", type="primary"):
-    # ここで model があるかチェックする（クラッシュ防止）
+    # model があるかチェック
     if model is None:
         st.sidebar.error("AIモデルが起動していません。Secretsの設定を確認してください。")
     elif input_memo:
