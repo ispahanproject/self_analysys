@@ -5,7 +5,7 @@ from datetime import datetime
 import plotly.io as pio
 import plotly.graph_objects as go
 import json
-import requests  # ← ライブラリを使わず、これ（標準機能）で直接通信します
+import requests
 
 # --- 初期設定 ---
 pio.templates.default = "plotly_dark"
@@ -42,19 +42,18 @@ if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
 
 input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: クロスウィンド着陸。接地寸前に風下ラダーを入れたらスムーズだった。")
 
-# --- 【修正点】ここから直接通信ロジック ---
 if st.sidebar.button("✨ Analyze with AI", type="primary"):
-    # APIキーの確認
-    api_key = st.secrets.get("GEMINI_API_KEY")
+    # 【最重要修正】APIキーのゴミ取り（引用符や改行を強制削除）
+    raw_key = st.secrets.get("GEMINI_API_KEY", "")
+    api_key = str(raw_key).replace('"', '').replace("'", "").strip()
     
     if not api_key:
         st.sidebar.error("Secretsに 'GEMINI_API_KEY' が設定されていません。")
     elif input_memo:
         with st.sidebar.status("Co-pilot is analyzing..."):
-            # プロンプト作成
             prompt_text = f"""
             あなたはベテランパイロットのインストラクターです。
-            以下のフライトメモを分析し、必ずJSON形式のみで出力してください。Markdownの装飾(```jsonなど)は不要です。
+            以下のフライトメモを分析し、必ずJSON形式のみで出力してください。Markdownの装飾は不要です。
             
             [メモ]
             {input_memo}
@@ -67,9 +66,12 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
             Example: {{"phase": "Landing", "tags": ["FM", "SA"], "feedback": "適切な修正操作です。"}}
             """
             
-            # APIへの直接リクエスト (requestsを使用)
-            url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){api_key}"
-            headers = {'Content-Type': 'application/json'}
+            # APIリクエスト設定 (URLパラメータではなくヘッダーを使用)
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+            headers = {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': api_key  # ここでクリーンなキーを渡す
+            }
             data = {
                 "contents": [{"parts": [{"text": prompt_text}]}]
             }
@@ -79,12 +81,9 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
                 
                 if response.status_code == 200:
                     result_json = response.json()
-                    # 回答テキストを取り出す
                     text = result_json['candidates'][0]['content']['parts'][0]['text']
-                    
-                    # JSONのクリーニング（```json などを削除）
+                    # JSONクリーニング
                     text = text.replace("```json", "").replace("```", "").strip()
-                    
                     result = json.loads(text)
                     
                     st.session_state.form_phase = result.get("phase", "Pre-flight")
@@ -95,7 +94,7 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
                     st.sidebar.error(f"Error {response.status_code}: {response.text}")
                     
             except Exception as e:
-                st.sidebar.error(f"Analysis Failed: {e}")
+                st.sidebar.error(f"通信エラー: {e}")
     else:
         st.sidebar.warning("メモを入力してください")
 
