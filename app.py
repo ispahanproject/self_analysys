@@ -40,33 +40,46 @@ if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flig
 if 'form_tags' not in st.session_state: st.session_state.form_tags = []
 if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
 
-input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: クロスウィンド着陸。接地寸前に風下ラダーを入れたらスムーズだった。")
+input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: クロスウィンド着陸。分析をお願い。")
 
 if st.sidebar.button("✨ Analyze with AI", type="primary"):
-    # APIキーのクリーニング
     raw_key = st.secrets.get("GEMINI_API_KEY", "")
     api_key = str(raw_key).replace('"', '').replace("'", "").strip()
     
     if not api_key:
         st.sidebar.error("Secretsに 'GEMINI_API_KEY' が設定されていません。")
     elif input_memo:
-        with st.sidebar.status("Co-pilot is analyzing..."):
-            prompt_text = f"""
-            あなたはベテランパイロットのインストラクターです。
-            以下のフライトメモを分析し、必ずJSON形式のみで出力してください。Markdownの装飾は不要です。
+        with st.sidebar.status("Instructor is checking..."):
             
+            # --- ここにあなたのペルソナ設定を適用 ---
+            prompt_text = f"""
+            役割とペルソナ：
+            あなたは、長年の経験を持つ『ベテランエアラインパイロット教官兼データアナリスト』です。航空業界の専門知識とデータ分析スキルを駆使し、ユーザーのフライト記録を整理・分析して、安全性の向上と技術の磨き込みをサポートします。
+
+            振る舞いとルール（システム適合版）：
+            以下のフライトメモを読み、JSON形式で出力してください。
+
+            1. **データの入力・分類・タグ付け**:
+               - メモから最適な `phase` ({', '.join(PHASES)}) を1つ特定する。
+               - 関連するパフォーマンス指標 `tags` ({', '.join(COMPETENCIES)}) を選ぶ。
+
+            2. **出力の制御（モード分岐）**:
+               - **通常時（メモ入力のみ）**: ユーザーが事実を記録しているだけの場合は、分析やアドバイスを行わないこと。その場合、`feedback` 欄には「登録完了」とだけ記すこと。
+               - **分析モード**: ユーザーから「分析して」「傾向は？」「どうすればいい？」等の指示がある、または明らかなミスや危険な兆候が含まれる場合のみ、現役教官の視点からプロフェッショナルで客観的なフィードバックを `feedback` 欄に記入すること。
+
             [メモ]
             {input_memo}
             
-            [出力要件]
-            1. "phase": メモの内容に最も合致するフライトフェーズ ({', '.join(PHASES)}) から1つ選ぶ。
-            2. "tags": 関連するコンピテンシー ({', '.join(COMPETENCIES)}) をリストで選ぶ (最大3つ)。
-            3. "feedback": インストラクターとしての短いフィードバック(1文)。
-            
-            Example: {{"phase": "Landing", "tags": ["FM", "SA"], "feedback": "適切な修正操作です。"}}
+            [出力JSONフォーマット]
+            {{
+                "phase": "Landing",
+                "tags": ["FM", "SA"],
+                "feedback": "（モードに応じて「登録完了」または「教官からのアドバイス」を記述）"
+            }}
+            必ずJSON形式のみを出力し、Markdown装飾は含めないでください。
             """
             
-            # 【確定修正】リストにあった「gemini-2.5-flash」を使用します
+            # Gemini 2.5 Flash を使用
             url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
             
             headers = {
@@ -91,8 +104,8 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
                         st.session_state.form_tags = result.get("tags", [])
                         st.session_state.form_feedback = result.get("feedback", "")
                         st.rerun()
-                    except (KeyError, IndexError, json.JSONDecodeError):
-                        st.sidebar.error("AIからの応答の解析に失敗しました。もう一度試してください。")
+                    except:
+                        st.sidebar.error("AIからの応答解析に失敗しました。")
                 else:
                     st.sidebar.error(f"Error {response.status_code}: {response.text}")
                     
@@ -111,11 +124,9 @@ with st.sidebar.form("save_form"):
         
     phase = st.selectbox("Phase", PHASES, index=current_phase_idx)
     tags = st.multiselect("Performance Indicators", COMPETENCIES, default=st.session_state.form_tags)
-    feedback = st.text_area("AI / Instructor Comment", value=st.session_state.form_feedback, height=80)
+    feedback = st.text_area("Instructor Feedback", value=st.session_state.form_feedback, height=100)
     
-    submitted = st.form_submit_button("Save to Logbook")
-    
-    if submitted:
+    if st.form_submit_button("Save to Logbook"):
         new_row = pd.DataFrame([{
             "Date": str(date),
             "Phase": phase,
@@ -168,4 +179,4 @@ with tab2:
         with st.expander(f"{row['Date']} - {row['Phase']} ({row['Tags']})"):
             st.markdown(f"**Memo:**\n{row['Memo']}")
             if fb_text:
-                st.info(f"**🤖 AI Feedback:**\n{fb_text}")
+                st.info(f"**👨‍✈️ Instructor:**\n{fb_text}")
