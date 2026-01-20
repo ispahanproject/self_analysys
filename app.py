@@ -24,8 +24,6 @@ st.markdown("""
     .stButton button:hover { background-color: #2ea043; }
     .stChatMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; }
     div[data-testid="stMetricValue"] { color: #00d4ff; font-family: 'Roboto Mono', monospace; }
-    
-    /* タブのスタイル調整 */
     button[data-baseweb="tab"] { background-color: transparent; color: #8b949e; font-weight: bold; }
     button[data-baseweb="tab"][aria-selected="true"] { color: #00ff41 !important; border-bottom-color: #00ff41 !important; }
 </style>
@@ -53,8 +51,7 @@ else:
 
 # --- 関数 ---
 def reset_entry():
-    # ここで最初のメッセージを設定
-    st.session_state.messages = [{"role": "assistant", "content": "SYSTEM READY. フライトの振り返りを開始します。状況を教えてください。"}]
+    st.session_state.messages = [{"role": "assistant", "content": "SYSTEM READY. フライトの振り返りを開始します。"}]
     st.session_state.form_phase = "Pre-flight"
     st.session_state.form_tags = []
     st.session_state.form_airport = ""
@@ -99,28 +96,22 @@ with col_chat:
     st.subheader("📡 COMMS LOG")
     chat_container = st.container(height=600)
     
-    # 履歴の表示
     with chat_container:
         for msg in st.session_state.messages:
             avatar = "👨‍✈️" if msg["role"] == "user" else "🤖"
             with st.chat_message(msg["role"], avatar=avatar):
                 st.markdown(msg["content"])
 
-    # 入力処理
     if prompt := st.chat_input("Input Flight Report..."):
-        # 1. ユーザーのメッセージを表示・保存
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_container:
             with st.chat_message("user", avatar="👨‍✈️"):
                 st.markdown(prompt)
 
-        # 2. APIキーの確認
         api_key_raw = st.secrets.get("GEMINI_API_KEY", "")
         api_key = str(api_key_raw).replace('"', '').replace("'", "").strip()
 
-        if not api_key:
-            st.error("⚠️ API KEY NOT FOUND. Check Secrets.")
-        else:
+        if api_key:
             with chat_container:
                 with st.chat_message("assistant", avatar="🤖"):
                     placeholder = st.empty()
@@ -128,10 +119,10 @@ with col_chat:
                     
                     current_memo = st.session_state.form_memo
                     
-                    # --- プロンプト (会話を優先するように修正) ---
+                    # --- ★ここが修正ポイント: 雑談除外の指示を追加 ---
                     system_prompt = f"""
                     あなたはベテランパイロット教官です。
-                    ユーザーの発言に対して、まずは**日本語で会話（質問、共感、アドバイス）**を行ってください。
+                    ユーザーの発言に対して、まずは日本語で会話（質問、共感、アドバイス）を行ってください。
                     その後に、区切り文字を入れてJSONデータを出力してください。
 
                     [現在のメモ状況]
@@ -140,9 +131,15 @@ with col_chat:
                     [ユーザーの新しい発言]
                     {prompt}
 
+                    【出力ルール】
+                    1. **会話パート:** ユーザーが雑談（食事の話など）をした場合は、それに付き合って気さくに返答すること。
+                    2. **JSONデータパート:** こちらは「公的なログブック」として扱うこと。
+                       - `memo_summary` には、運航、安全、操作、機体、気象、クルーリソースに関連する**「航空業務上の事実」のみ**を記録せよ。
+                       - **雑談、食事、私的な感情、業務に関係のない愚痴は、JSONからは完全に除外・削除せよ。**
+
                     【出力フォーマット】
                     (Part 1: 会話)
-                    ここには教官としての返答を書いてください。
+                    教官としての返答
                     
                     ||JSON_START||
                     
@@ -152,7 +149,7 @@ with col_chat:
                         "tags": {COMPETENCIES} から選択(リスト),
                         "airport": "IATAコード",
                         "feedback": "教官コメント(1文)",
-                        "memo_summary": "事実の箇条書き(追記・統合)"
+                        "memo_summary": "事実の箇条書き(雑談除去済み)"
                     }}
                     """
                     
@@ -166,52 +163,36 @@ with col_chat:
                             result_json = response.json()
                             raw = result_json['candidates'][0]['content']['parts'][0]['text']
                             
-                            chat_res = ""
-                            
-                            # 分割処理
                             if "||JSON_START||" in raw:
                                 parts = raw.split("||JSON_START||")
                                 chat_res = parts[0].strip()
                                 json_part = parts[1].strip().replace("```json","").replace("```","")
                                 
-                                # JSON解析
                                 try:
                                     d = json.loads(json_part)
                                     st.session_state.form_phase = d.get("phase", st.session_state.form_phase)
-                                    
                                     new_tags = d.get("tags", [])
                                     if not isinstance(new_tags, list): new_tags = []
                                     st.session_state.form_tags = new_tags
-                                    
                                     st.session_state.form_airport = d.get("airport", st.session_state.form_airport)
                                     if d.get("feedback"): st.session_state.form_feedback = d.get("feedback")
                                     if d.get("memo_summary"): st.session_state.form_memo = d.get("memo_summary")
-                                except:
-                                    pass # JSON失敗しても会話は表示する
+                                except: pass
                             else:
-                                # 区切り文字がない場合は全文を会話として扱う
                                 chat_res = raw
                             
-                            # AIの返答を表示・保存
                             placeholder.markdown(chat_res)
                             st.session_state.messages.append({"role": "assistant", "content": chat_res})
-                            
-                            # フォーム更新のためにリラン
                             st.rerun()
-                            
                         else:
                             placeholder.error(f"API Error: {response.status_code}")
-                            
                     except Exception as e:
                         placeholder.error(f"Connection Error: {e}")
 
-# --- 右: Data Panel (Tabbed) ---
+# --- 右: Data Panel ---
 with col_data:
     tab_input, tab_archive = st.tabs(["⏺ RECORDER", "📂 ARCHIVE"])
     
-    # ----------------------------------
-    # タブ1: 入力フォーム
-    # ----------------------------------
     with tab_input:
         st.caption("FLIGHT DATA ENTRY")
         with st.container(border=True):
@@ -229,7 +210,7 @@ with col_data:
                 valid_t = [t for t in curr_t if t in COMPETENCIES]
                 tags = st.multiselect("TAGS", COMPETENCIES, default=valid_t)
                 
-                st.markdown("**FACTS**")
+                st.markdown("**FACTS (NO CHIT-CHAT)**")
                 memo = st.text_area("Memo", value=st.session_state.form_memo, height=150, label_visibility="collapsed")
                 st.markdown("**NOTES**")
                 feedback = st.text_area("FB", value=st.session_state.form_feedback, height=80, label_visibility="collapsed")
@@ -257,9 +238,6 @@ with col_data:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # ----------------------------------
-    # タブ2: データベース
-    # ----------------------------------
     with tab_archive:
         st.caption("MISSION LOGS DATABASE")
         search_query = st.text_input("🔍 FILTER LOGS", placeholder="Search keywords...")
