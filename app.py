@@ -11,16 +11,15 @@ import json
 pio.templates.default = "plotly_dark"
 st.set_page_config(page_title="Pilot AI Log", page_icon="✈️", layout="wide")
 
-# --- Gemini API設定 (gemini-1.5-flash対応版) ---
+# --- Gemini API設定 (安定版 gemini-pro を使用) ---
 model = None
 api_error_message = ""
 
 try:
-    # Secretsからキーを取得できるかチェック
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # requirements.txt で google-generativeai>=0.7.0 を指定していれば flash が使えます
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # エラー回避のため、あえて古いライブラリでも動く 'gemini-pro' を使用します
+        model = genai.GenerativeModel('gemini-pro')
     else:
         api_error_message = "Secretsに 'GEMINI_API_KEY' が見つかりません。"
 except Exception as e:
@@ -32,18 +31,16 @@ PHASES = ["Pre-flight", "Taxi", "Takeoff", "Climb", "Cruise", "Descent", "Approa
 
 st.title("👨‍✈️ AI Pilot Performance Tracker")
 
-# APIエラーがある場合は画面上部に警告を出す
+# APIエラー警告
 if api_error_message:
     st.error(f"⚠️ {api_error_message}")
-    st.warning("Streamlit Cloudの 'Manage app' > 'Settings' > 'Secrets' の記述場所を確認してください（一番上が推奨です）。")
+    st.warning("Secretsの設定を確認してください。")
 
 # --- Google Sheets 接続 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-# シート読み込み（列不足エラー回避のためtryで囲む）
 try:
     df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4], ttl=5)
 except Exception:
-    # 5列目(AI_Feedback)がない場合のフォールバック
     try:
         df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3], ttl=5)
     except:
@@ -55,7 +52,6 @@ if df.empty:
 else:
     if "AI_Feedback" not in df.columns:
         df["AI_Feedback"] = ""
-    # 型変換
     for col in ["Date", "Phase", "Memo", "Tags", "AI_Feedback"]:
         if col in df.columns:
             df[col] = df[col].astype(str)
@@ -63,7 +59,6 @@ else:
 # --- サイドバー: AI解析付き入力フォーム ---
 st.sidebar.header("📝 New Entry with AI")
 
-# セッション状態の管理
 if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
 if 'form_tags' not in st.session_state: st.session_state.form_tags = []
 if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
@@ -73,7 +68,6 @@ input_memo = st.sidebar.text_area("Flight Memo", height=120, placeholder="例: �
 
 # 2. AI解析ボタン
 if st.sidebar.button("✨ Analyze with AI", type="primary"):
-    # model があるかチェック
     if model is None:
         st.sidebar.error("AIモデルが起動していません。Secretsの設定を確認してください。")
     elif input_memo:
@@ -96,7 +90,14 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
             
             try:
                 response = model.generate_content(prompt)
-                text = response.text.replace("```json", "").replace("```", "").strip()
+                # JSONクリーニング処理
+                text = response.text
+                if "```json" in text:
+                    text = text.split("```json")[1].split("```")[0]
+                elif "```" in text:
+                    text = text.split("```")[0]
+                text = text.strip()
+                
                 result = json.loads(text)
                 
                 st.session_state.form_phase = result.get("phase", "Pre-flight")
@@ -113,7 +114,6 @@ if st.sidebar.button("✨ Analyze with AI", type="primary"):
 with st.sidebar.form("save_form"):
     date = st.date_input("Date", datetime.now())
     
-    # AI提案値の反映
     current_phase_idx = 0
     if st.session_state.form_phase in PHASES:
         current_phase_idx = PHASES.index(st.session_state.form_phase)
