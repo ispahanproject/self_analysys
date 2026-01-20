@@ -51,7 +51,6 @@ else:
 
 # --- 関数 ---
 def reset_entry():
-    # ★ここも先輩口調に変更
     st.session_state.messages = [{"role": "assistant", "content": "お疲れ様！今日のフライトはどうだった？何でも話してね。"}]
     st.session_state.form_phase = "Pre-flight"
     st.session_state.form_tags = []
@@ -99,7 +98,6 @@ with col_chat:
     
     with chat_container:
         for msg in st.session_state.messages:
-            # アイコンを女性教官に変更
             avatar = "👨‍✈️" if msg["role"] == "user" else "👩‍✈️"
             with st.chat_message(msg["role"], avatar=avatar):
                 st.markdown(msg["content"])
@@ -121,16 +119,14 @@ with col_chat:
                     
                     current_memo = st.session_state.form_memo
                     
-                    # --- ★ここがキャラ変ポイント ---
+                    # --- ★ここが修正の肝：強力なフィルタリング指示 ---
                     system_prompt = f"""
                     あなたはユーザーにとっての「頼れる女性の先輩パイロット」です。
                     ユーザーの発言に対して、まずは日本語で会話を行ってください。
 
                     【口調の指定】
-                    - 親しみやすく、包容力のある先輩口調で話すこと。
-                    - 例：「〜だね」「〜かな？」「大変だったね」「次はこうしてみよう！」
-                    - 決して堅苦しい敬語（〜ですね、〜しました）は使わないこと。
-                    - ユーザーを励まし、気付きを与えるようなアドバイスを行うこと。
+                    - 親しみやすく、包容力のある先輩口調（「〜だね」「〜かな？」）
+                    - 雑談や食事の話にも気さくに反応すること。
 
                     その後に、区切り文字を入れてJSONデータを出力してください。
 
@@ -140,22 +136,27 @@ with col_chat:
                     [ユーザーの新しい発言]
                     {prompt}
 
-                    【出力ルール】
-                    1. **会話パート:** 雑談には気さくに付き合うこと（食事の話など）。
-                    2. **JSONデータパート:** ここは公的なログなので、**「航空業務上の事実」のみ**をクールに記録すること。雑談は一切含めない。
+                    【★重要：データ抽出とクリーニングのルール】
+                    1. JSONデータの `memo_summary` は「公式な運航記録」である。
+                    2. **以下の内容は「ノイズ」として扱い、絶対に記録してはならない。**
+                       - 食事の内容・感想（美味しかった、お腹すいた等）
+                       - 個人の感情のみの記述（疲れた、楽しかった、怖かった等）
+                       - 運航に関係のない世間話
+                    3. **既存の [現在のメモ状況] にこれらノイズが含まれている場合、今回の出力で削除して浄化すること。**
+                    4. 記録すべきは「運航事実、操作、気象、機体状態、安全上の懸念」のみである。
 
                     【出力フォーマット】
-                    (Part 1: 先輩としての会話)
+                    (Part 1: 会話 - ここは雑談OK)
                     
                     ||JSON_START||
                     
-                    (Part 2: JSONデータ)
+                    (Part 2: JSONデータ - ここは事実のみ厳守)
                     {{
                         "phase": "{PHASES} から選択",
                         "tags": {COMPETENCIES} から選択(リスト),
                         "airport": "IATAコード",
                         "feedback": "教官コメント(1文)",
-                        "memo_summary": "事実の箇条書き(雑談除去済み)"
+                        "memo_summary": "事実の箇条書き(雑談フィルター適用済み)"
                     }}
                     """
                     
@@ -216,7 +217,8 @@ with col_data:
                 valid_t = [t for t in curr_t if t in COMPETENCIES]
                 tags = st.multiselect("TAGS", COMPETENCIES, default=valid_t)
                 
-                st.markdown("**FACTS (NO CHIT-CHAT)**")
+                # ラベルで強調
+                st.markdown("**FACTS (STRICT FILTER)**")
                 memo = st.text_area("Memo", value=st.session_state.form_memo, height=150, label_visibility="collapsed")
                 st.markdown("**NOTES**")
                 feedback = st.text_area("FB", value=st.session_state.form_feedback, height=80, label_visibility="collapsed")
