@@ -27,7 +27,7 @@ try:
         # 日付型変換などを安全に行う
         df["Date"] = df["Date"].astype(str)
         df["Tags"] = df["Tags"].astype(str)
-exceptException:
+except Exception:
     st.error("データの読み込みに失敗しました。Secretsの設定を確認してください。")
     st.stop()
 
