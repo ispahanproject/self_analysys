@@ -7,26 +7,75 @@ import plotly.graph_objects as go
 import json
 import requests
 
-# --- 初期設定 ---
-pio.templates.default = "plotly_dark"
-st.set_page_config(page_title="AI Pilot Log Chat", page_icon="✈️", layout="wide")
+# --- ページ設定 ---
+st.set_page_config(page_title="Cockpit Logbook", page_icon="✈️", layout="wide")
 
-# 定義
+# --- デザイン(CSS)の注入 ---
+st.markdown("""
+<style>
+    /* 全体のフォントと背景 */
+    .stApp {
+        background-color: #0e1117;
+        font-family: 'Roboto Mono', monospace;
+    }
+    
+    /* タイトル周り */
+    h1, h2, h3 {
+        color: #e0e0e0 !important;
+        font-family: 'Helvetica Neue', sans-serif;
+        letter-spacing: 1px;
+    }
+    
+    /* 入力フォームのスタイル（計器風） */
+    .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] {
+        background-color: #1c2026;
+        color: #00ff41; /* ターミナルグリーン */
+        border: 1px solid #30363d;
+        border-radius: 4px;
+    }
+    
+    /* ボタンのスタイル（タクティカル） */
+    .stButton button {
+        background-color: #238636;
+        color: white;
+        border: 1px solid rgba(27,31,35,0.15);
+        border-radius: 6px;
+        font-weight: 600;
+        transition: 0.2s;
+    }
+    .stButton button:hover {
+        background-color: #2ea043;
+        border-color: #f0f6fc;
+    }
+    
+    /* チャットメッセージのスタイル */
+    .stChatMessage {
+        background-color: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+    
+    /* Metrics（上部の数値）のスタイル */
+    div[data-testid="stMetricValue"] {
+        color: #00d4ff; /* サイバーシアン */
+        font-family: 'Roboto Mono', monospace;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 定義 ---
 COMPETENCIES = ["FA", "FM", "AP", "SA", "DM", "WM", "TB", "CO", "KK", "AA"]
 PHASES = ["Pre-flight", "Taxi", "Takeoff", "Climb", "Cruise", "Descent", "Approach", "Landing", "Parking", "Debriefing"]
 
-st.title("👨‍✈️ AI Instructor Chat Log")
-
-# --- Google Sheets 接続 ---
+# --- データ接続 & 読み込み ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-
 try:
     df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4, 5], ttl=5)
 except:
-    try:
-        df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4], ttl=5)
-    except:
-        df = pd.DataFrame()
+    try: df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3, 4], ttl=5)
+    except: df = pd.DataFrame()
 
 required_columns = ["Date", "Phase", "Memo", "Tags", "AI_Feedback", "Airport"]
 if df.empty:
@@ -36,201 +85,194 @@ else:
         if col not in df.columns: df[col] = ""
     for col in df.columns: df[col] = df[col].astype(str)
 
-# --- ★リセット用関数 (記憶をクリアして初期状態に戻す) ---
+# --- リセット関数 ---
 def reset_entry():
-    st.session_state.messages = [
-        {"role": "assistant", "content": "お疲れ様です、キャプテン。次のフライトについて話しましょう。"}
-    ]
+    st.session_state.messages = [{"role": "assistant", "content": "SYSTEM READY. Awaiting Pilot Report..."}]
     st.session_state.form_phase = "Pre-flight"
     st.session_state.form_tags = []
     st.session_state.form_airport = ""
     st.session_state.form_memo = ""
     st.session_state.form_feedback = ""
 
-# --- セッション状態初期化 ---
-if "messages" not in st.session_state:
-    # 初回起動時だけここを通る（以降はreset_entryで管理）
-    reset_entry()
-
+# --- セッション初期化 ---
+if "messages" not in st.session_state: reset_entry()
 if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
 if 'form_tags' not in st.session_state: st.session_state.form_tags = []
 if 'form_airport' not in st.session_state: st.session_state.form_airport = ""
 if 'form_memo' not in st.session_state: st.session_state.form_memo = ""
 if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
 
-# --- レイアウト ---
-col_chat, col_tools = st.columns([2, 1])
+# ==========================================
+# ✈️ HUD (Head Up Display) - 上部ダッシュボード
+# ==========================================
+st.markdown("### ✈️ FLIGHT DATA ANALYZER")
+
+# 上部に3つの重要指標を表示
+m1, m2, m3, m4 = st.columns(4)
+with m1:
+    st.metric(label="TOTAL ENTRIES", value=len(df))
+with m2:
+    last_apt = df.iloc[-1]["Airport"] if not df.empty else "N/A"
+    st.metric(label="LAST AIRPORT", value=last_apt)
+with m3:
+    # 最も多いタグ
+    all_tags = []
+    for t in df["Tags"]:
+        if t and t != "nan": all_tags.extend([x.strip() for x in t.split(",")])
+    top_tag = pd.Series(all_tags).mode()[0] if all_tags else "N/A"
+    st.metric(label="TOP ISSUE", value=top_tag)
+with m4:
+    if st.button("🔄 SYSTEM RESET"):
+        reset_entry()
+        st.rerun()
+
+st.markdown("---")
 
 # ==========================================
-# 左カラム: チャット
+# メインレイアウト
 # ==========================================
+col_chat, col_data = st.columns([1.8, 1.2])
+
+# --- 左: Communication Log ---
 with col_chat:
-    # 過去ログ表示
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    st.subheader("📡 COMMS LOG")
+    
+    # チャット表示エリア
+    chat_container = st.container(height=500)
+    with chat_container:
+        for msg in st.session_state.messages:
+            # 役割によってアイコンを変える
+            avatar = "👨‍✈️" if msg["role"] == "user" else "🤖"
+            with st.chat_message(msg["role"], avatar=avatar):
+                st.markdown(msg["content"])
 
-    # 入力欄
-    if prompt := st.chat_input("フライトの振り返りを入力..."):
+    # 入力エリア
+    if prompt := st.chat_input("Input Flight Report..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        with chat_container:
+            with st.chat_message("user", avatar="👨‍✈️"):
+                st.markdown(prompt)
 
         api_key_raw = st.secrets.get("GEMINI_API_KEY", "")
         api_key = str(api_key_raw).replace('"', '').replace("'", "").strip()
 
-        if not api_key:
-            st.error("APIキーが設定されていません。")
-        else:
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                message_placeholder.markdown("Updating Log...")
+        if api_key:
+            with chat_container:
+                with st.chat_message("assistant", avatar="🤖"):
+                    placeholder = st.empty()
+                    placeholder.markdown("`PROCESSING DATA...`")
 
-                current_memo_content = st.session_state.form_memo
+                    current_memo = st.session_state.form_memo
+                    system_prompt = f"""
+                    役割：ベテランパイロット教官兼データアナリスト。
+                    タスク：ユーザーの入力を分析し、事実を構造化データとして抽出・更新する。
 
-                # プロンプト（追記ロジック）
-                system_prompt = f"""
-                役割：あなたはベテランパイロット教官です。
-                ユーザーとの対話を通じて、フライトログの作成をサポートします。
+                    [Current Memo Segment]
+                    {current_memo}
 
-                【タスク】
-                「現在のメモ」と「新しい発言」を統合し、最新のログ情報を作成してください。
+                    [New Input]
+                    {prompt}
 
-                [現在のメモの状態]
-                {current_memo_content}
+                    出力ルール:
+                    1. JSON形式のみ出力。
+                    2. `||JSON_START||` で会話文とデータを区切る。
+                    3. `memo_summary` は「事実の箇条書き」として追記・統合する。
 
-                [ユーザーの新しい発言]
-                {prompt}
+                    JSON Schema:
+                    {{
+                        "phase": "...",
+                        "tags": ["..."],
+                        "airport": "...",
+                        "feedback": "...",
+                        "memo_summary": "..."
+                    }}
+                    """
 
-                【重要：出力形式のルール】
-                回答は必ず以下の2つのパートに分けて出力してください。
-                区切り文字として `||JSON_START||` を使用してください。
+                    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+                    headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
+                    data = {"contents": [{"parts": [{"text": system_prompt}]}]}
 
-                [Part 1: 会話パート]
-                ユーザーへの返答、追加の質問、またはアドバイスを自然な日本語で記述。
-
-                `||JSON_START||`
-
-                [Part 2: データ更新パート (JSON)]
-                以下の項目を含むJSONを出力。
-                
-                - phase: {PHASES} から最も適切なもの
-                - tags: {COMPETENCIES} から関連するものを**累積**して選択
-                - airport: 空港コード (IATA 3レター)
-                - feedback: 教官コメントの要約(1文)
-                - memo_summary: ★最重要★
-                  「現在のメモ」の内容を保持しつつ、「新しい発言」から得られた事実を**追記・統合**した箇条書きテキスト。
-                  過去の事実を勝手に消さないこと。時系列順に整理すること。
-
-                Markdown装飾なしの純粋なJSONとして出力してください。
-                """
-
-                url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-                headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
-                data = {"contents": [{"parts": [{"text": system_prompt}]}]}
-
-                try:
-                    response = requests.post(url, headers=headers, json=data, timeout=30)
-                    if response.status_code == 200:
-                        result_json = response.json()
-                        raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
-                        
-                        if "||JSON_START||" in raw_text:
-                            parts = raw_text.split("||JSON_START||")
-                            chat_response = parts[0].strip()
-                            json_part = parts[1].strip().replace("```json", "").replace("```", "")
+                    try:
+                        response = requests.post(url, headers=headers, json=data, timeout=30)
+                        if response.status_code == 200:
+                            result_json = response.json()
+                            raw = result_json['candidates'][0]['content']['parts'][0]['text']
                             
-                            try:
-                                extracted_data = json.loads(json_part)
-                                st.session_state.form_phase = extracted_data.get("phase", st.session_state.form_phase)
-                                st.session_state.form_tags = extracted_data.get("tags", st.session_state.form_tags)
-                                st.session_state.form_airport = extracted_data.get("airport", st.session_state.form_airport)
-                                
-                                if extracted_data.get("feedback"):
-                                    st.session_state.form_feedback = extracted_data.get("feedback")
-                                
-                                if extracted_data.get("memo_summary"):
-                                    st.session_state.form_memo = extracted_data.get("memo_summary")
+                            if "||JSON_START||" in raw:
+                                parts = raw.split("||JSON_START||")
+                                chat_res = parts[0].strip()
+                                json_res = parts[1].strip().replace("```json","").replace("```","")
+                                try:
+                                    d = json.loads(json_res)
+                                    st.session_state.form_phase = d.get("phase", st.session_state.form_phase)
+                                    st.session_state.form_tags = d.get("tags", st.session_state.form_tags)
+                                    st.session_state.form_airport = d.get("airport", st.session_state.form_airport)
+                                    if d.get("feedback"): st.session_state.form_feedback = d.get("feedback")
+                                    if d.get("memo_summary"): st.session_state.form_memo = d.get("memo_summary")
+                                except: pass
+                            else:
+                                chat_res = raw
+                            
+                            placeholder.markdown(chat_res)
+                            st.session_state.messages.append({"role": "assistant", "content": chat_res})
+                            st.rerun()
+                    except Exception as e:
+                        placeholder.error(f"ERR: {e}")
 
-                            except:
-                                pass
-                        else:
-                            chat_response = raw_text
-                        
-                        message_placeholder.markdown(chat_response)
-                        st.session_state.messages.append({"role": "assistant", "content": chat_response})
-                        st.rerun()
-                        
-                    else:
-                        message_placeholder.error(f"Error: {response.status_code}")
-                except Exception as e:
-                    message_placeholder.error(f"通信エラー: {e}")
-
-# ==========================================
-# 右カラム: 保存フォーム & ツール
-# ==========================================
-with col_tools:
-    st.header("📝 Log Entry")
+# --- 右: Flight Data Recorder ---
+with col_data:
+    st.subheader("💾 DATA RECORDER")
     
-    # ★ここに手動リセットボタンを追加
-    if st.button("🔄 Start New Entry (Reset)", help="保存せずに会話と入力をリセットします"):
-        reset_entry()
-        st.rerun()
-        
-    st.markdown("---")
-
-    with st.form("save_form"):
-        date = st.date_input("Date", datetime.now())
-        airport = st.text_input("Airport", value=st.session_state.form_airport)
-        
-        curr_phase = st.session_state.form_phase
-        p_idx = PHASES.index(curr_phase) if curr_phase in PHASES else 0
-        phase = st.selectbox("Phase", PHASES, index=p_idx)
-        
-        tags = st.multiselect("Tags", COMPETENCIES, default=st.session_state.form_tags)
-        
-        memo = st.text_area("Memo (Facts Only)", value=st.session_state.form_memo, height=200)
-        
-        feedback = st.text_area("AI Feedback", value=st.session_state.form_feedback, height=80)
-        
-        # 保存ボタン
-        if st.form_submit_button("💾 Save to Sheet", type="primary"):
-            new_row = pd.DataFrame([{
-                "Date": str(date),
-                "Phase": phase,
-                "Memo": memo,
-                "Tags": ", ".join(tags),
-                "AI_Feedback": feedback,
-                "Airport": airport
-            }])
-            updated_df = pd.concat([df, new_row], ignore_index=True)
-            conn.update(worksheet="Sheet1", data=updated_df)
+    with st.container(border=True):
+        with st.form("save_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                date = st.date_input("DATE", datetime.now())
+            with c2:
+                airport = st.text_input("ARPT (IATA)", value=st.session_state.form_airport)
             
-            st.success("Saved!")
+            p_idx = PHASES.index(st.session_state.form_phase) if st.session_state.form_phase in PHASES else 0
+            phase = st.selectbox("PHASE", PHASES, index=p_idx)
             
-            # ★保存成功時に自動リセット
-            reset_entry()
-            st.rerun()
+            tags = st.multiselect("PI TAGS", COMPETENCIES, default=st.session_state.form_tags)
+            
+            st.markdown("**EVENT LOG (FACTS ONLY)**")
+            memo = st.text_area("Memo", value=st.session_state.form_memo, height=180, label_visibility="collapsed")
+            
+            st.markdown("**INSTRUCTOR NOTES**")
+            feedback = st.text_area("Feedback", value=st.session_state.form_feedback, height=80, label_visibility="collapsed")
+            
+            # 保存ボタンのデザイン変更はCSSで行っています
+            if st.form_submit_button("⏺ RECORD ENTRY", type="primary"):
+                new_row = pd.DataFrame([{
+                    "Date": str(date), "Phase": phase, "Memo": memo, 
+                    "Tags": ", ".join(tags), "AI_Feedback": feedback, "Airport": airport
+                }])
+                conn.update(worksheet="Sheet1", data=pd.concat([df, new_row], ignore_index=True))
+                st.toast("✅ DATA SECURELY RECORDED", icon="💾")
+                reset_entry()
+                st.rerun()
 
-    st.markdown("---")
-    
-    # ログ・分析タブ
-    tab_log, tab_stats = st.tabs(["🗂 Logs", "📊 Stats"])
-    
-    with tab_log:
-        search = st.text_input("🔍 Search", "")
-        target_df = df[df["Memo"].str.contains(search, case=False, na=False)] if search else df
-        st.dataframe(target_df.sort_values("Date", ascending=False).head(5), hide_index=True, use_container_width=True)
-
-    with tab_stats:
-        all_tags = []
-        for t in df["Tags"]:
-            if t and t != "nan": all_tags.extend([x.strip() for x in t.split(",")])
-        if all_tags:
-            counts = pd.Series(all_tags).value_counts()
-            fig = go.Figure(data=go.Scatterpolar(
-                r=[counts.get(c, 0) for c in COMPETENCIES],
-                theta=COMPETENCIES, fill='toself'
-            ))
-            fig.update_layout(margin=dict(t=20, b=20, l=20, r=20), paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True)
+    # --- 簡易分析グラフ (サイバー風) ---
+    st.subheader("📊 ANALYTICS")
+    if all_tags:
+        counts = pd.Series(all_tags).value_counts()
+        
+        # Plotlyのテーマをダークサイバー風に
+        fig = go.Figure(data=go.Scatterpolar(
+            r=[counts.get(c, 0) for c in COMPETENCIES],
+            theta=COMPETENCIES,
+            fill='toself',
+            line_color='#00ff41', # マトリックスグリーン
+            fillcolor='rgba(0, 255, 65, 0.2)'
+        ))
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            polar=dict(
+                radialaxis=dict(visible=True, showticklabels=False, linecolor='#30363d'),
+                angularaxis=dict(tickfont=dict(color='#e0e0e0', size=10))
+            ),
+            margin=dict(t=20, b=20, l=30, r=30)
+        )
+        st.plotly_chart(fig, use_container_width=True)
