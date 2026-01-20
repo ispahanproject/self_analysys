@@ -39,7 +39,7 @@ else:
 # --- セッション状態 ---
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "お疲れ様です、キャプテン。本日のフライトはいかがでしたか？"}
+        {"role": "assistant", "content": "お疲れ様です、キャプテン。本日のフライトを振り返りましょう。気になった事象を少しずつ話してください。"}
     ]
 
 if 'form_phase' not in st.session_state: st.session_state.form_phase = "Pre-flight"
@@ -72,34 +72,50 @@ with col_chat:
         else:
             with st.chat_message("assistant"):
                 message_placeholder = st.empty()
-                message_placeholder.markdown("Analyzing...")
+                message_placeholder.markdown("Updating Log...")
 
-                # --- プロンプト修正部分 ---
+                # 現在のメモの内容を取得（これをAIに渡して維持させる）
+                current_memo_content = st.session_state.form_memo
+
+                # --- プロンプト修正部分（情報の統合ロジック） ---
                 system_prompt = f"""
                 役割：あなたはベテランパイロット教官です。
-                ユーザーとの対話を通じて、フライトの振り返りをサポートします。
-                
-                【重要】出力形式のルール:
+                ユーザーとの対話を通じて、フライトログの作成をサポートします。
+
+                【タスク】
+                「現在のメモ」と「新しい発言」を統合し、最新のログ情報を作成してください。
+
+                [現在のメモの状態]
+                {current_memo_content}
+
+                [ユーザーの新しい発言]
+                {prompt}
+
+                【重要：出力形式のルール】
                 回答は必ず以下の2つのパートに分けて出力してください。
                 区切り文字として `||JSON_START||` を使用してください。
 
                 [Part 1: 会話パート]
-                ユーザーへの返答、質問、またはアドバイスを自然な日本語で記述。
-                
-                `||JSON_START||`
-                
-                [Part 2: データ抽出パート]
-                これまでの会話内容から、ログブックに記録すべき情報を抽出しJSONで出力。
-                
-                JSON項目:
-                - phase: {PHASES} から1つ
-                - tags: {COMPETENCIES} から複数可
-                - airport: 空港コード (IATA 3レター)
-                - feedback: ログに残すべき教官コメントの要約(1文)
-                - memo_summary: ★重要★ 会話内容に含まれる「起こった事実」のみを抽出し、箇条書きで整理したテキスト。感情（怖かった、焦った等）は排除し、客観的事実のみを記すこと。改行コードを含めてよい。
-                  (例: "- HND RWY34RへILS進入\n- 500ftで強い右横風を確認\n- 接地後の減速操作が遅れた")
+                ユーザーへの返答、追加の質問、またはアドバイスを自然な日本語で記述。
 
-                現在のユーザーの発言: {prompt}
+                `||JSON_START||`
+
+                [Part 2: データ更新パート (JSON)]
+                以下の項目を含むJSONを出力。
+                
+                - phase: {PHASES} から最も適切なもの（会話が進んでフェーズが変わったら更新）
+                - tags: {COMPETENCIES} から関連するものを**累積**して選択
+                - airport: 空港コード (IATA 3レター)
+                - feedback: 教官コメントの要約(1文)
+                - memo_summary: ★最重要★
+                  「現在のメモ」の内容を保持しつつ、「新しい発言」から得られた事実を**追記・統合**した箇条書きテキスト。
+                  過去の事実を勝手に消さないこと。時系列順に整理すること。
+                  (例: 
+                   - 出発前に整備遅れが発生
+                   - 離陸時、強い横風を確認
+                   - (今回追加) 着陸時、フレアが遅れた)
+
+                Markdown装飾なしの純粋なJSONとして出力してください。
                 """
 
                 url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
@@ -119,18 +135,17 @@ with col_chat:
                             
                             try:
                                 extracted_data = json.loads(json_part)
+                                # 各項目を更新
                                 st.session_state.form_phase = extracted_data.get("phase", st.session_state.form_phase)
                                 st.session_state.form_tags = extracted_data.get("tags", st.session_state.form_tags)
                                 st.session_state.form_airport = extracted_data.get("airport", st.session_state.form_airport)
+                                
                                 if extracted_data.get("feedback"):
                                     st.session_state.form_feedback = extracted_data.get("feedback")
                                 
-                                # ★ここを変更: AIが作った「事実の箇条書き(memo_summary)」をメモ欄に入れる
+                                # ★重要：統合されたメモを反映
                                 if extracted_data.get("memo_summary"):
                                     st.session_state.form_memo = extracted_data.get("memo_summary")
-                                else:
-                                    # 生成されなかった場合は念のため元の入力を入れる
-                                    st.session_state.form_memo = prompt
 
                             except:
                                 pass
@@ -151,7 +166,7 @@ with col_chat:
 # ==========================================
 with col_tools:
     st.header("📝 Log Entry")
-    st.caption("AIが事実のみを箇条書きで整理します")
+    st.caption("会話が進むと、ここに事実が追記されていきます")
     
     with st.form("save_form"):
         date = st.date_input("Date", datetime.now())
@@ -163,8 +178,8 @@ with col_tools:
         
         tags = st.multiselect("Tags", COMPETENCIES, default=st.session_state.form_tags)
         
-        # メモ（AIが整理した箇条書きが入る）
-        memo = st.text_area("Memo (Facts Only)", value=st.session_state.form_memo, height=150)
+        # メモ（AIが統合・追記した内容が入る）
+        memo = st.text_area("Memo (Facts Only)", value=st.session_state.form_memo, height=200)
         
         feedback = st.text_area("AI Feedback (Saved)", value=st.session_state.form_feedback, height=80)
         
