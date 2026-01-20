@@ -103,11 +103,10 @@ if 'form_memo' not in st.session_state: st.session_state.form_memo = ""
 if 'form_feedback' not in st.session_state: st.session_state.form_feedback = ""
 
 # ==========================================
-# ✈️ HUD (Head Up Display) - 上部ダッシュボード
+# ✈️ HUD (Head Up Display)
 # ==========================================
 st.markdown("### ✈️ FLIGHT DATA ANALYZER")
 
-# 上部に3つの重要指標を表示
 m1, m2, m3, m4 = st.columns(4)
 with m1:
     st.metric(label="TOTAL ENTRIES", value=len(df))
@@ -115,7 +114,6 @@ with m2:
     last_apt = df.iloc[-1]["Airport"] if not df.empty else "N/A"
     st.metric(label="LAST AIRPORT", value=last_apt)
 with m3:
-    # 最も多いタグ
     all_tags = []
     for t in df["Tags"]:
         if t and t != "nan": all_tags.extend([x.strip() for x in t.split(",")])
@@ -137,16 +135,13 @@ col_chat, col_data = st.columns([1.8, 1.2])
 with col_chat:
     st.subheader("📡 COMMS LOG")
     
-    # チャット表示エリア
     chat_container = st.container(height=500)
     with chat_container:
         for msg in st.session_state.messages:
-            # 役割によってアイコンを変える
             avatar = "👨‍✈️" if msg["role"] == "user" else "🤖"
             with st.chat_message(msg["role"], avatar=avatar):
                 st.markdown(msg["content"])
 
-    # 入力エリア
     if prompt := st.chat_input("Input Flight Report..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_container:
@@ -177,6 +172,7 @@ with col_chat:
                     1. JSON形式のみ出力。
                     2. `||JSON_START||` で会話文とデータを区切る。
                     3. `memo_summary` は「事実の箇条書き」として追記・統合する。
+                    4. `tags` は必ず {COMPETENCIES} の中から選ぶこと。勝手な用語を使わない。
 
                     JSON Schema:
                     {{
@@ -205,7 +201,13 @@ with col_chat:
                                 try:
                                     d = json.loads(json_res)
                                     st.session_state.form_phase = d.get("phase", st.session_state.form_phase)
-                                    st.session_state.form_tags = d.get("tags", st.session_state.form_tags)
+                                    
+                                    # タグの更新
+                                    new_tags = d.get("tags", [])
+                                    # リスト型でない場合はリストにする
+                                    if not isinstance(new_tags, list): new_tags = []
+                                    st.session_state.form_tags = new_tags
+                                    
                                     st.session_state.form_airport = d.get("airport", st.session_state.form_airport)
                                     if d.get("feedback"): st.session_state.form_feedback = d.get("feedback")
                                     if d.get("memo_summary"): st.session_state.form_memo = d.get("memo_summary")
@@ -231,10 +233,20 @@ with col_data:
             with c2:
                 airport = st.text_input("ARPT (IATA)", value=st.session_state.form_airport)
             
-            p_idx = PHASES.index(st.session_state.form_phase) if st.session_state.form_phase in PHASES else 0
+            # Phaseの安全策
+            current_phase = st.session_state.form_phase
+            p_idx = PHASES.index(current_phase) if current_phase in PHASES else 0
             phase = st.selectbox("PHASE", PHASES, index=p_idx)
             
-            tags = st.multiselect("PI TAGS", COMPETENCIES, default=st.session_state.form_tags)
+            # 【重要修正】Tagsの安全策（フィルタリング）
+            # AIが変なタグ(例: "Communication")を出しても、リスト(COMPETENCIES)にないものは除外する
+            current_tags = st.session_state.form_tags
+            if not isinstance(current_tags, list):
+                current_tags = []
+            
+            valid_tags = [t for t in current_tags if t in COMPETENCIES]
+            
+            tags = st.multiselect("PI TAGS", COMPETENCIES, default=valid_tags)
             
             st.markdown("**EVENT LOG (FACTS ONLY)**")
             memo = st.text_area("Memo", value=st.session_state.form_memo, height=180, label_visibility="collapsed")
@@ -242,7 +254,6 @@ with col_data:
             st.markdown("**INSTRUCTOR NOTES**")
             feedback = st.text_area("Feedback", value=st.session_state.form_feedback, height=80, label_visibility="collapsed")
             
-            # 保存ボタンのデザイン変更はCSSで行っています
             if st.form_submit_button("⏺ RECORD ENTRY", type="primary"):
                 new_row = pd.DataFrame([{
                     "Date": str(date), "Phase": phase, "Memo": memo, 
@@ -253,17 +264,15 @@ with col_data:
                 reset_entry()
                 st.rerun()
 
-    # --- 簡易分析グラフ (サイバー風) ---
+    # --- 簡易分析グラフ ---
     st.subheader("📊 ANALYTICS")
     if all_tags:
         counts = pd.Series(all_tags).value_counts()
-        
-        # Plotlyのテーマをダークサイバー風に
         fig = go.Figure(data=go.Scatterpolar(
             r=[counts.get(c, 0) for c in COMPETENCIES],
             theta=COMPETENCIES,
             fill='toself',
-            line_color='#00ff41', # マトリックスグリーン
+            line_color='#00ff41',
             fillcolor='rgba(0, 255, 65, 0.2)'
         ))
         fig.update_layout(
