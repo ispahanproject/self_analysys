@@ -17,19 +17,16 @@ st.title("👨‍✈️ Pilot Performance Tracker")
 # --- Google Sheets 接続 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# データの読み込み
-try:
-    df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3], ttl=5)
-    # 空データ対策
-    if df.empty:
-        df = pd.DataFrame(columns=["Date", "Phase", "Memo", "Tags"])
-    else:
-        # 日付型変換などを安全に行う
-        df["Date"] = df["Date"].astype(str)
-        df["Tags"] = df["Tags"].astype(str)
-except Exception:
-    st.error("データの読み込みに失敗しました。Secretsの設定を確認してください。")
-    st.stop()
+# データの読み込み (try-exceptを外して、エラーをそのまま表示させる)
+df = conn.read(worksheet="Sheet1", usecols=[0, 1, 2, 3], ttl=5)
+
+# 空データ対策
+if df.empty:
+    df = pd.DataFrame(columns=["Date", "Phase", "Memo", "Tags"])
+else:
+    # 日付型変換などを安全に行う
+    df["Date"] = df["Date"].astype(str)
+    df["Tags"] = df["Tags"].astype(str)
 
 # --- 入力フォーム (サイドバー/スマホなら上部) ---
 with st.expander("📝 New Flight Entry", expanded=True):
